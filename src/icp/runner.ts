@@ -3,20 +3,35 @@ import { HttpAgent, pollForResponse } from "@dfinity/agent";
 import { Principal } from "@dfinity/principal";
 import { parseCandid } from "candid-parser-wasm";
 
-function findReturnTypesFromDid(did: string, method: string): string[] {
-  // Match: method_name : (args) -> (rets) query;
-  // Also works for update without 'query'
-  const re = new RegExp(
-    String.raw`${method}\s*:\s*\([^)]*\)\s*->\s*\(([^)]*)\)`,
-    "m"
-  );
-  const m = did.match(re);
-  if (!m) throw new Error(`Could not find return signature for method "${method}" in DID`);
-  const inside = m[1].trim();
-  if (!inside) return [];
-  // split by commas at top-level is hard; MVP: assume single return or simple comma list
-  // Your stuff is mostly single return: opt Lottery, vec ResultBundle, etc.
-  return inside.split(",").map((s) => s.trim()).filter(Boolean);
+function stripServiceBlock(did: string): string {
+  const sIdx = did.indexOf("service");
+  if (sIdx < 0) return did;
+
+  // Find first '{' after "service"
+  const braceStart = did.indexOf("{", sIdx);
+  if (braceStart < 0) return did;
+
+  // Walk braces to find matching '}'
+  let depth = 0;
+  let i = braceStart;
+  for (; i < did.length; i++) {
+    const ch = did[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        // include closing '}'
+        i++;
+        break;
+      }
+    }
+  }
+
+  // Remove "service ... }" block
+  const before = did.slice(0, sIdx).trim();
+  const after = did.slice(i).trim();
+
+  return [before, after].filter(Boolean).join("\n\n").trim();
 }
 
 
@@ -55,10 +70,33 @@ function normalizeArgs(argsText: string): string {
   return t;
 }
 
-function makeDecodeDid(typeDefsOnly: string, retTypes: string[]): string {
-  // decodeIdlArgs decodes "args", so we define __ret(args=returnTypes)->()
+// Find return types by parsing the DID text directly:
+// method : (args) -> (rets) query;
+function findReturnTypesFromDid(did: string, method: string): string[] {
+  // escape method name for regex
+  const esc = method.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  const re = new RegExp(
+    String.raw`\b${esc}\b\s*:\s*\([^)]*\)\s*->\s*\(([^)]*)\)`,
+    "m"
+  );
+
+  const m = did.match(re);
+  if (!m) throw new Error(`Could not find return signature for "${method}" in DID`);
+
+  const inside = m[1].trim();
+  if (!inside) return [];
+
+  // MVP: split by commas (safe for your current returns like "opt X", "vec Y", etc.)
+  return inside.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+// decodeIdlArgs decodes "args bytes" for a method, so we create a dummy service:
+// __ret : (RET_TYPES...) -> ();
+function makeDecodeDid(didWithoutService: string, retTypes: string[]): string {
   const argsSig = retTypes.length ? retTypes.join(", ") : "";
-  return `${typeDefsOnly}
+  return `${didWithoutService}
+
 service : {
   __ret : (${argsSig}) -> ();
 };`;
@@ -75,49 +113,12 @@ export async function runMethod(opts: {
   const raw = (opts.didText || "").trim();
   if (!raw) throw new Error("No DID loaded yet. Click Fetch Interface first.");
 
+  // Sanitize + inline simple aliases in service block
   const did = inlineSimpleAliasesInService(sanitizeDid(raw));
 
-  const sIdx = did.indexOf("service");
-  if (sIdx < 0) throw new Error("DID has no service block.");
-  const typeDefsOnly = did.slice(0, sIdx).trim();
-
-  const parser = parseCandid(did);
-
-  // IMPORTANT: this is the real API (no optional chaining)
-  const retTypes = findReturnTypesFromDid(did, opts.method);
-const decodeDid = makeDecodeDid(typeDefsOnly, retTypes);
-const decodeParser = parseCandid(decodeDid);
-
-
-const retTypes = retTypesRaw.map((t) => {
-  let x = String(t).trim();
-
-  // If parser returns TS-like array types: T[] or [T]
-  // Convert:
-  //   T[]    -> vec T
-  //   [T]    -> vec T
-  //   [A,B]  -> vec (A,B)  (best effort)
-  if (x.endsWith("[]")) {
-    x = `vec ${x.slice(0, -2).trim()}`;
-  }
-
-  // [ ... ] → vec ...
-  if (x.startsWith("[") && x.endsWith("]")) {
-    const inner = x.slice(1, -1).trim();
-    if (inner.includes(",")) {
-      // Best effort: treat as tuple element type list
-      x = `vec (${inner})`;
-    } else if (inner.length > 0) {
-      x = `vec ${inner}`;
-    } else {
-      x = "vec empty";
-    }
-  }
-
-  return x;
-});
-
-  const decodeDid = makeDecodeDid(typeDefsOnly, retTypes);
+  // Split typedefs (everything before "service")
+  const didWithoutService = stripServiceBlock(did);
+const decodeDid = makeDecodeDid(didWithoutService, retTypes);
   const decodeParser = parseCandid(decodeDid);
 
   const agent = new HttpAgent({
@@ -131,7 +132,6 @@ const retTypes = retTypesRaw.map((t) => {
   const arg = parser.encodeIdlArgs(opts.method, argText);
 
   const decodeReply = (replyBytes: Uint8Array) => {
-    // decode reply bytes as args of __ret
     return decodeParser.decodeIdlArgs("__ret", replyBytes);
   };
 
@@ -153,4 +153,3 @@ const retTypes = retTypesRaw.map((t) => {
   const polled = await pollForResponse(agent, canisterId, requestId);
   return decodeReply(polled.reply.arg);
 }
-
