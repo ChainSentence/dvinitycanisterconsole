@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.DS_Store
+.env
+*.log
+.vscode/
+
+# DFX / IC (als je dit ooit gebruikt)
+.dfx/
+canister_ids.json
