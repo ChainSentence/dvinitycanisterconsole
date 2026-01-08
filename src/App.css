@@ -1,42 +1,339 @@
+:root {
+  --bg: #010c03;
+  --bg-panel: rgba(1, 20, 6, 0.96);
+  --bg-panel-soft: rgba(1, 26, 8, 0.96);
+  --border-soft: rgba(0, 255, 128, 0.18);
+  --border-strong: rgba(0, 255, 128, 0.35);
+  --text-main: #f5fff3;
+  --text-soft: #b9e9c5;
+  --neon: #46ff9a;
+  --neon-soft: rgba(70, 255, 154, 0.5);
+  --shadow-soft: 0 18px 40px rgba(0, 0, 0, 0.7);
+}
+
+/* Global */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: radial-gradient(circle at top, #021b08 0, #010305 60%);
+  color: var(--text-main);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+
+  /* voorkom auto-zoom / scaling op mobiel */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  overflow-x: hidden;
+}
+
 #root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  min-height: 100vh;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+/* Wrapper: mobile-first */
+
+.matrixWrap {
+  min-height: 100vh;
+  padding: 12px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;   /* center inhoud, maar alles heeft width:100% max */
+  gap: 12px;
+  width: 100%;
+  max-width: 100%;
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
+/* Header card */
+
+.headerBar {
+  width: 100%;
+  max-width: 960px;
+  box-sizing: border-box;
+
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, rgba(1, 30, 10, 0.96), rgba(1, 10, 4, 0.96));
+  border: 1px solid var(--border-soft);
+  box-shadow: var(--shadow-soft);
+  /* NERGENS position: fixed/sticky → header scrolt gewoon mee */
+}
+
+/* Brand-left */
+
+.brandLeft {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+.brandLogo {
+  width: 64px;
+  height: auto;
+}
+
+.subTitle {
+  font-size: 11px;
+  color: var(--text-soft);
+}
+
+/* Right side of header (login buttons / principal) */
+
+.headerBar > .btn,
+.headerBar > .badge {
+  align-self: stretch;
+}
+
+/* Panel */
+
+.panel {
+  width: 100%;
+  max-width: 960px;
+  box-sizing: border-box;
+}
+
+.panelInner {
+  border-radius: 18px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-soft);
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+/* Reusable bits */
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-soft);
+}
+
+.smallMeta {
+  font-size: 11px;
+  color: var(--text-soft);
+  opacity: 0.9;
+}
+
+.hr {
+  height: 1px;
+  background: radial-gradient(circle, var(--border-soft), transparent);
+  opacity: 0.8;
+}
+
+/* Inputs / buttons */
+
+.input,
+.select,
+.ta {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-panel-soft);
+  color: var(--text-main);
+  padding: 8px 10px;
+  font-size: 13px;
+  outline: none;
+}
+
+.input:focus,
+.select:focus,
+.ta:focus {
+  border-color: var(--neon);
+  box-shadow: 0 0 0 1px var(--neon-soft);
+}
+
+.ta {
+  min-height: 80px;
+  resize: vertical;
+}
+
+.btn {
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--text-main);
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+  white-space: nowrap;
+}
+
+.btnPrimary {
+  background: radial-gradient(circle at top left, var(--neon), #0b8a4a);
+  border-color: var(--border-strong);
+  color: #021407;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Pills / badges */
+
+.badge {
+  font-size: 11px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--border-soft);
+  color: var(--text-soft);
+}
+
+/* Status + output */
+
+.statusBox {
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: rgba(0, 0, 0, 0.4);
+  white-space: pre-wrap;
+}
+
+.outputBox .ta {
+  min-height: 140px;
+}
+
+/* Signature line */
+
+.sigLine {
+  font-size: 11px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  overflow-x: auto;
+}
+
+/* “Build on ICP” footer */
+
+.buildFooter {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  justify-content: center;
+}
+
+.buildFooterInner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  opacity: 0.95;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 1px;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--neon);
+  text-transform: uppercase;
+}
+
+/* -------------- Desktop tweaks -------------- */
+
+@media (min-width: 768px) {
+  .matrixWrap {
+    padding: 24px;
+    gap: 18px;
   }
-  to {
-    transform: rotate(360deg);
+
+  .headerBar {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+  }
+
+  .headerBar > .btn,
+  .headerBar > .badge {
+    align-self: center;
+  }
+
+  .panelInner {
+    padding: 18px 20px;
+  }
+
+  .buildFooterInner {
+    font-size: 26px;
   }
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
+/* ---------- Mobile layout ---------- */
+
+@media (max-width: 767px) {
+  .matrixWrap {
+    padding: 10px;
+    align-items: stretch;        /* alles full-width stacken */
+  }
+
+  .headerBar {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+
+  .brandLogo {
+    width: 52px;
+  }
+
+  .subTitle {
+    font-size: 10px;
+  }
+
+  /* Buttons in header worden full-width "blokken" i.p.v. losse chips */
+  .headerBar > .btn {
+    width: 100%;
+    text-align: center;
+  }
+
+  .headerBar > .badge {
+    width: 100%;
+    overflow-wrap: anywhere;  /* lange principals breken, niet layout oprekken */
+  }
+
+  .panelInner {
+    padding: 14px;
+  }
+
+  .input,
+  .select,
+  .ta {
+    font-size: 14px;
+  }
+
+  .buildFooterInner {
+    font-size: 18px;
+    flex-wrap: wrap;
+    justify-content: center;
   }
 }
 
-.card {
-  padding: 2em;
-}
 
-.read-the-docs {
-  color: #888;
+/* Zorg dat de header NIET sticky/fixed is */
+.headerBar,
+.gridHint {
+  position: static !important;
+  top: auto !important;
+  z-index: auto !important;
 }
