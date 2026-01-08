@@ -1,10 +1,9 @@
-node_modules/
-dist/
-.DS_Store
+node_modules
+dist
+build
 .env
-*.log
-.vscode/
-
-# DFX / IC (als je dit ooit gebruikt)
-.dfx/
-canister_ids.json
+.env.local
+npm-debug.log*
+.DS_Store
+.idea
+.vscode

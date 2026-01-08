@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "canisters": {
+    "console_assets": {
+      "type": "assets",
+      "source": ["dist"]
+    }
+  },
+  "networks": {
+    "ic": {
+      "providers": ["https://icp-api.io"]
+    }
+  }
+}

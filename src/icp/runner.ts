@@ -1,155 +1,391 @@
 // src/icp/runner.ts
-import { HttpAgent, pollForResponse } from "@dfinity/agent";
+import { HttpAgent } from "@dfinity/agent";
+import { IDL } from "@dfinity/candid";
 import { Principal } from "@dfinity/principal";
-import { parseCandid } from "candid-parser-wasm";
+import type { MethodSig } from "./methods";
 
-function stripServiceBlock(did: string): string {
-  const sIdx = did.indexOf("service");
-  if (sIdx < 0) return did;
+type StatusCb = (msg: string) => void;
 
-  // Find first '{' after "service"
-  const braceStart = did.indexOf("{", sIdx);
-  if (braceStart < 0) return did;
+/**
+ * Supported input (Candid-ish):
+ *   () / empty
+ *   (1) / (1 : nat64) / (1 : nat)
+ *   ("hello")
+ *   (true) / (false)
+ *   (null)
+ *   (principal "aaaaa-aa")
+ *   (opt principal "aaaaa-aa") / (opt null)
+ *   (vec { 1; 2; 3 }) / (vec { 1; 2 } : nat64) / (vec { 1; 2 } : nat)
+ *   (vec { 1; 2; 255 } : nat8)         // becomes Uint8Array
+ *   (vec { principal "a"; principal "b" })
+ *
+ * Multi-arg:
+ *   (0, 50)
+ *   (principal "aaaaa-aa", 10)
+ *   (vec { 1; 2; 3 }, opt null)
+ */
 
-  // Walk braces to find matching '}'
-  let depth = 0;
-  let i = braceStart;
-  for (; i < did.length; i++) {
-    const ch = did[i];
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) {
-        // include closing '}'
-        i++;
-        break;
+type ArgVal =
+  | { kind: "nat"; value: bigint }
+  | { kind: "principal"; value: string }
+  | { kind: "opt_principal"; value: string | null }
+  | { kind: "vec_nat"; value: bigint[] }
+  | { kind: "vec_nat8"; value: number[] }
+  | { kind: "vec_principal"; value: string[] }
+  | { kind: "text"; value: string }
+  | { kind: "bool"; value: boolean }
+  | { kind: "null" };
+
+function splitTopLevelComma(s: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let depthBrace = 0; // { }
+  let inStr = false;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+
+    if (ch === '"' && s[i - 1] !== "\\") inStr = !inStr;
+
+    if (!inStr) {
+      if (ch === "{") depthBrace++;
+      else if (ch === "}") depthBrace--;
+
+      if (ch === "," && depthBrace === 0) {
+        out.push(cur.trim());
+        cur = "";
+        continue;
       }
     }
+
+    cur += ch;
   }
 
-  // Remove "service ... }" block
-  const before = did.slice(0, sIdx).trim();
-  const after = did.slice(i).trim();
-
-  return [before, after].filter(Boolean).join("\n\n").trim();
+  if (cur.trim()) out.push(cur.trim());
+  return out;
 }
 
-
-function sanitizeDid(input: string): string {
-  let s = input.replace(/\r\n/g, "\n");
-  s = s.replace(/\/\*[\s\S]*?\*\//g, ""); // /* ... */
-  s = s.replace(/\/\/.*$/gm, "");         // // ...
-  return s.trim();
+function parseVecBody(body: string): string[] {
+  return body
+    .split(";")
+    .map((x) => x.trim())
+    .filter(Boolean);
 }
 
-// Inline ONLY simple aliases inside service signatures (LotteryId -> nat64)
-function inlineSimpleAliasesInService(did: string): string {
-  const aliasRe =
-    /^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(nat64|nat|int|text|principal|bool)\s*;\s*$/gm;
+function parseSingleArgText(s: string): ArgVal {
+  const t = s.trim();
+  if (!t) throw new Error("Empty argument");
 
-  const aliases = new Map<string, string>();
-  let m: RegExpExecArray | null;
-  while ((m = aliasRe.exec(did)) !== null) aliases.set(m[1], m[2]);
-  if (aliases.size === 0) return did;
+  // null
+  if (t === "null") return { kind: "null" };
 
-  const sIdx = did.indexOf("service");
-  if (sIdx < 0) return did;
+  // bool
+  if (t === "true" || t === "false") return { kind: "bool", value: t === "true" };
 
-  const head = did.slice(0, sIdx);
-  let tail = did.slice(sIdx);
+  // text "..."
+  const tm = t.match(/^"([\s\S]*)"$/);
+  if (tm) return { kind: "text", value: tm[1] };
 
-  for (const [name, base] of aliases.entries()) {
-    tail = tail.replace(new RegExp(`\\b${name}\\b`, "g"), base);
+  // principal "aaaaa-aa"
+  const pm = t.match(/^principal\s+"([^"]+)"$/);
+  if (pm) return { kind: "principal", value: pm[1] };
+
+  // opt principal "aaaaa-aa" / opt null
+  const opm = t.match(/^opt\s+principal\s+"([^"]+)"$/);
+  if (opm) return { kind: "opt_principal", value: opm[1] };
+  if (t === "opt null") return { kind: "opt_principal", value: null };
+
+  // vec { ... } : nat8  (explicit nat8)
+  const v8m = t.match(/^vec\s*\{\s*([\s\S]*)\s*\}\s*:\s*nat8$/);
+  if (v8m) {
+    const body = v8m[1].trim();
+    if (!body) return { kind: "vec_nat8", value: [] };
+
+    const parts = parseVecBody(body);
+    const nums = parts.map((p) => {
+      const m = p.match(/^(\d+)(\s*:\s*nat8)?$/);
+      if (!m) throw new Error(`Unsupported vec nat8 element: "${p}"`);
+      const n = Number(m[1]);
+      if (n < 0 || n > 255) throw new Error(`nat8 out of range (0..255): ${n}`);
+      return n;
+    });
+
+    return { kind: "vec_nat8", value: nums };
   }
-  return head + tail;
+
+  // vec { principal "a"; principal "b" }
+  const vpm = t.match(/^vec\s*\{\s*([\s\S]*)\s*\}$/);
+  if (vpm && /\bprincipal\s+"/.test(t)) {
+    const body = vpm[1].trim();
+    if (!body) return { kind: "vec_principal", value: [] };
+
+    const parts = parseVecBody(body);
+    const principals = parts.map((p) => {
+      const m = p.match(/^principal\s+"([^"]+)"$/);
+      if (!m) throw new Error(`Unsupported vec principal element: "${p}"`);
+      return m[1];
+    });
+
+    return { kind: "vec_principal", value: principals };
+  }
+
+  // vec { ... } numbers -> treat as vec nat
+  const vnm = t.match(/^vec\s*\{\s*([\s\S]*)\s*\}(?:\s*:\s*(nat|nat64|nat32|nat16))?$/);
+  if (vnm) {
+    const body = vnm[1].trim();
+    if (!body) return { kind: "vec_nat", value: [] };
+
+    const parts = parseVecBody(body);
+    const nums = parts.map((p) => {
+      const m = p.match(/^(\d+)(\s*:\s*(nat|nat64|nat32|nat16))?$/);
+      if (!m) throw new Error(`Unsupported vec element: "${p}". Use 1 or 1 : nat64`);
+      return BigInt(m[1]);
+    });
+
+    return { kind: "vec_nat", value: nums };
+  }
+
+  // number -> nat-ish (BigInt)
+  const nm = t.match(/^(\d+)(\s*:\s*(nat|nat64|nat32|nat16|nat8))?$/);
+  if (nm) return { kind: "nat", value: BigInt(nm[1]) };
+
+  throw new Error(`Unsupported arg: "${s}"`);
 }
 
-function normalizeArgs(argsText: string): string {
+function parseArgsText(argsText: string): ArgVal[] {
   const t = (argsText || "").trim();
-  if (t === "" || /^\(\s*\)$/.test(t)) return "()";
-  return t;
+  if (t === "" || /^\(\s*\)$/.test(t)) return [];
+
+  if (!t.startsWith("(") || !t.endsWith(")")) {
+    throw new Error('Args must be wrapped in parentheses, e.g. (), (1), (0, 50)');
+  }
+
+  const inner = t.slice(1, -1).trim();
+  if (!inner) return [];
+
+  const parts = splitTopLevelComma(inner);
+  return parts.map(parseSingleArgText);
 }
 
-// Find return types by parsing the DID text directly:
-// method : (args) -> (rets) query;
-function findReturnTypesFromDid(did: string, method: string): string[] {
-  // escape method name for regex
-  const esc = method.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function toHex(u8: Uint8Array): string {
+  return Array.from(u8)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
 
-  const re = new RegExp(
-    String.raw`\b${esc}\b\s*:\s*\([^)]*\)\s*->\s*\(([^)]*)\)`,
-    "m"
+function toBase64(u8: Uint8Array): string {
+  let bin = "";
+  for (const b of u8) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+
+function jsonReplacer(_k: string, v: any) {
+  if (typeof v === "bigint") return v.toString();
+  if (v && typeof v === "object" && typeof v.toText === "function") return v.toText();
+  if (v instanceof Uint8Array) return { bytes: v.length, hex: toHex(v) };
+  return v;
+}
+
+function unwrapSingle(decoded: any[]) {
+  return decoded.length === 1 ? decoded[0] : decoded;
+}
+
+function rawDump(u8: Uint8Array, meta: Record<string, any> = {}) {
+  return JSON.stringify(
+    {
+      ...meta,
+      bytes: u8.length,
+      base64: toBase64(u8),
+      hex: toHex(u8),
+    },
+    null,
+    2
   );
-
-  const m = did.match(re);
-  if (!m) throw new Error(`Could not find return signature for "${method}" in DID`);
-
-  const inside = m[1].trim();
-  if (!inside) return [];
-
-  // MVP: split by commas (safe for your current returns like "opt X", "vec Y", etc.)
-  return inside.split(",").map((s) => s.trim()).filter(Boolean);
 }
 
-// decodeIdlArgs decodes "args bytes" for a method, so we create a dummy service:
-// __ret : (RET_TYPES...) -> ();
-function makeDecodeDid(didWithoutService: string, retTypes: string[]): string {
-  const argsSig = retTypes.length ? retTypes.join(", ") : "";
-  return `${didWithoutService}
+/**
+ * Explicit polling for update replies.
+ * We poll read_state until the request is replied/rejected.
+ */
+async function pollUpdate(
+  agent: HttpAgent,
+  canisterId: string,
+  requestId: Uint8Array,
+  onStatus?: StatusCb
+): Promise<any> {
+  const a: any = agent;
 
-service : {
-  __ret : (${argsSig}) -> ();
-};`;
+  const maxAttempts = 60; // ~42s at 700ms
+  for (let i = 0; i < maxAttempts; i++) {
+    onStatus?.(`Polling update status… (${i + 1}/${maxAttempts})`);
+
+    const state = await a.readState(canisterId, {
+      paths: [[new TextEncoder().encode("request_status"), requestId]],
+    });
+
+    const status =
+      state?.request_status?.status ??
+      state?.status ??
+      state?.requestStatus?.status ??
+      null;
+
+    if (status === "replied" || status === "rejected" || status === "done") {
+      return state;
+    }
+
+    if (typeof a.requestStatus === "function") {
+      try {
+        const rs = await a.requestStatus(canisterId, requestId);
+        if (rs?.status === "replied" || rs?.status === "rejected" || rs?.status === "done") {
+          return rs;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    await new Promise((r) => setTimeout(r, 700));
+  }
+
+  throw new Error("Update polling timed out (no reply/reject).");
 }
 
 export async function runMethod(opts: {
   canisterId: string;
-  didText: string;
-  method: string;
+  methodSig: MethodSig;
   argsText: string;
   isQuery: boolean;
   identity?: any;
+  onStatus?: StatusCb;
 }): Promise<string> {
-  const raw = (opts.didText || "").trim();
-  if (!raw) throw new Error("No DID loaded yet. Click Fetch Interface first.");
-
-  // Sanitize + inline simple aliases in service block
-  const did = inlineSimpleAliasesInService(sanitizeDid(raw));
-
-  // Split typedefs (everything before "service")
-  const didWithoutService = stripServiceBlock(did);
-const decodeDid = makeDecodeDid(didWithoutService, retTypes);
-  const decodeParser = parseCandid(decodeDid);
-
   const agent = new HttpAgent({
     host: "https://icp-api.io",
     identity: opts.identity,
   });
 
-  const canisterId = Principal.fromText(opts.canisterId);
+  const parsed = parseArgsText(opts.argsText);
+  const argTypes = opts.methodSig.argTypes ?? [];
 
-  const argText = normalizeArgs(opts.argsText);
-  const arg = parser.encodeIdlArgs(opts.method, argText);
-
-  const decodeReply = (replyBytes: Uint8Array) => {
-    return decodeParser.decodeIdlArgs("__ret", replyBytes);
-  };
-
-  if (opts.isQuery) {
-    const res = await agent.query(canisterId, { methodName: opts.method, arg });
-
-    if ("reject_code" in res) {
-      throw new Error(`Query rejected: ${res.reject_code} ${res.reject_message}`);
-    }
-
-    return decodeReply(res.reply.arg);
+  if (parsed.length !== argTypes.length) {
+    throw new Error(
+      `Arg count mismatch: method expects ${argTypes.length} args, you provided ${parsed.length}.`
+    );
   }
 
-  const { requestId } = await agent.call(canisterId, {
-    methodName: opts.method,
+  const argValues: any[] = parsed.map((a) => {
+    switch (a.kind) {
+      case "principal":
+        return Principal.fromText(a.value);
+
+      // Candid opt is encoded as [] for null, [value] for some
+      case "opt_principal":
+        return a.value === null ? [] : [Principal.fromText(a.value)];
+
+      case "nat":
+        return a.value; // BigInt works for nat/nat64/nat32/etc
+
+      case "vec_nat":
+        return a.value; // bigint[]
+
+      case "vec_nat8":
+        return Uint8Array.from(a.value); // vec nat8
+
+      case "vec_principal":
+        return a.value.map((p) => Principal.fromText(p));
+
+      case "text":
+        return a.value;
+
+      case "bool":
+        return a.value;
+
+      case "null":
+        return null;
+
+      default:
+        return a as never;
+    }
+  });
+
+  const arg = IDL.encode(argTypes, argValues);
+
+  const haveRetTypes = Array.isArray(opts.methodSig.retTypes) && opts.methodSig.retTypes.length > 0;
+
+  // -------------------- QUERY --------------------
+  if (opts.isQuery) {
+    const res: any = await agent.query(opts.canisterId, {
+      methodName: opts.methodSig.name,
+      arg,
+    });
+
+    if (res?.status && res.status !== "replied") {
+      return JSON.stringify(res, null, 2);
+    }
+
+    const replyBuf = res?.reply?.arg;
+    if (!replyBuf) {
+      return JSON.stringify({ error: "No reply.arg in query response", raw: res }, null, 2);
+    }
+
+    const u8 = new Uint8Array(replyBuf);
+
+    if (!haveRetTypes) {
+      return rawDump(u8, {
+        ok: true,
+        mode: "query",
+        method: opts.methodSig.name,
+        note: "No retTypes available, showing RAW bytes.",
+      });
+    }
+
+    const decoded = IDL.decode(opts.methodSig.retTypes, u8);
+    return JSON.stringify(unwrapSingle(decoded), jsonReplacer, 2);
+  }
+
+  // -------------------- UPDATE --------------------
+  const submit: any = await agent.call(opts.canisterId, {
+    methodName: opts.methodSig.name,
     arg,
   });
 
-  const polled = await pollForResponse(agent, canisterId, requestId);
-  return decodeReply(polled.reply.arg);
+  const requestId: Uint8Array | undefined = submit?.requestId;
+  if (!requestId) {
+    return JSON.stringify({ error: "No requestId from agent.call()", raw: submit }, null, 2);
+  }
+
+  const polled: any = await pollUpdate(agent, opts.canisterId, requestId, opts.onStatus);
+
+  const replyBuf =
+    polled?.reply?.arg ??
+    polled?.request_status?.reply?.arg ??
+    polled?.requestStatus?.reply?.arg ??
+    null;
+
+  const status =
+    polled?.status ??
+    polled?.request_status?.status ??
+    polled?.requestStatus?.status ??
+    null;
+
+  if (status && status !== "replied" && status !== "done") {
+    return JSON.stringify(polled, null, 2);
+  }
+
+  if (!replyBuf) {
+    return JSON.stringify({ error: "No reply.arg after polling", raw: polled }, null, 2);
+  }
+
+  const u8 = new Uint8Array(replyBuf as ArrayBuffer);
+
+  if (!haveRetTypes) {
+    return rawDump(u8, {
+      ok: true,
+      mode: "update",
+      method: opts.methodSig.name,
+      note: "No retTypes available, showing RAW bytes.",
+    });
+  }
+
+  const decoded = IDL.decode(opts.methodSig.retTypes, u8);
+  return JSON.stringify(unwrapSingle(decoded), jsonReplacer, 2);
 }
